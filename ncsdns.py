@@ -145,14 +145,42 @@ while 1:
     if not data:
         log.error("client provided no data")
         continue
+    else:
+        print "Data:" + str(data)
+        print "Client Address:" + str(client_address[0])
+        print "--------"
+        print "Query received from client is:\n", hexdump(data)
+        queryHeader = Header.fromData(data)
+        print "Query header received from client is:\n", hexdump(queryHeader.pack())
+        queryQE = QE.fromData(data, 16)
+        print "Query QE received from client is:\n", hexdump(queryQE.pack())
 
-    #
-    # TODO: Insert code here to perform the recursive DNS lookup;
-    #       putting the result in reply.
-    #
 
-    logger.log(DEBUG2, "our reply in full:") 
-    logger.log(DEBUG2, hexdump(reply))
+        print("SENT!")
+
+
+        cs.sendto(data, ("199.7.83.42", 53))
+        (nsreply, server_address,) = cs.recvfrom(512)
+
+        queryHeader = Header.fromData(nsreply)
+        queryQE = QE.fromData(nsreply, 16)
+        queryRR = RR.fromData(nsreply, 32)
+
+
+        print "Server address: " + str(server_address)
+
+        print "Query received from client is:\n", hexdump(nsreply)
+        print "Query header received from client is:\n", hexdump(queryHeader.pack())
+        print "Query QE received from client is:\n", hexdump(queryQE.pack())
+        print "Query RR received from client is:\n", hexdump(queryRR)
+
+
+
+        # Final response back to client
+        reply = nsreply
+        address = (str(client_address[0]), 33333)
+        logger.log(DEBUG2, "our reply in full:")
+        logger.log(DEBUG2, hexdump(reply))
 
     ss.sendto(reply, address)
     
