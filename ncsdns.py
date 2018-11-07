@@ -141,40 +141,47 @@ cs = socket(AF_INET, SOCK_DGRAM)
 # This is a simple, single-threaded server that takes successive
 # connections with each iteration of the following loop:
 while 1:
-    (data, client_address,) = ss.recvfrom(512) # DNS limits UDP msgs to 512 bytes
+    (data, client_address,) = ss.recvfrom(512)  # DNS limits UDP msgs to 512 bytes
     if not data:
         log.error("client provided no data")
         continue
     else:
-        print "Data:" + str(data)
-        print "Client Address:" + str(client_address[0])
-        print "--------"
-        print "Query received from client is:\n", hexdump(data)
-        queryHeader = Header.fromData(data)
-        print "Query header received from client is:\n", hexdump(queryHeader.pack())
-        queryQE = QE.fromData(data, 16)
-        print "Query QE received from client is:\n", hexdump(queryQE.pack())
-
+        cs.sendto(data, (ROOTNS_IN_ADDR, 53))
+        (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
 
         print("SENT!")
-
-
-        cs.sendto(data, ("199.7.83.42", 53))
-        (nsreply, server_address,) = cs.recvfrom(512)
+        print "NSReply length is: " + str(len(nsreply))
 
         queryHeader = Header.fromData(nsreply)
-        queryQE = QE.fromData(nsreply, 16)
-        queryRR = RR.fromData(nsreply, 32)
+        queryQE = QE.fromData(nsreply, queryHeader.__len__())
 
+        print "Query header received from client is:\n", queryHeader
+        print "Query QE received from client is:\n", queryQE
+        print "Query RR received from client is:\n"
 
-        print "Server address: " + str(server_address)
+        queryRRTuples = []
+        offset = queryHeader.__len__() + queryQE.__len__()
 
-        print "Query received from client is:\n", hexdump(nsreply)
-        print "Query header received from client is:\n", hexdump(queryHeader.pack())
-        print "Query QE received from client is:\n", hexdump(queryQE.pack())
-        print "Query RR received from client is:\n", hexdump(queryRR)
+        minRRLineLen = len(nsreply) - offset - 1
+        RRcounter = 0
+        
+        while minRRLineLen < len(nsreply) - offset:
+            # Get next glue line
+            auxRRline = RR.fromData(nsreply, offset)
 
+            # Append to RR list, update offset
+            queryRRTuples.append(auxRRline)
+            offset += queryRRTuples[RRcounter][1]
 
+            # Debug printing
+            queryRR = queryRRTuples[RRcounter][0]
+            print queryRR
+
+            # Update minimum line length for safety stop
+            if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
+            RRcounter += 1
+
+        print "Done - next querry;"
 
         # Final response back to client
         reply = nsreply
@@ -183,4 +190,3 @@ while 1:
         logger.log(DEBUG2, hexdump(reply))
 
     ss.sendto(reply, address)
-    
