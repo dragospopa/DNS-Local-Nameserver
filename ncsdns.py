@@ -91,6 +91,90 @@ class RR_NS_Cache:
         return str(self.cache)
 
 
+
+def recurser(question, ipQuerried) :
+    print "The IP that i've called was:", str(ipQuerried)
+    try:
+        cs.sendto(str(question), (str(ipQuerried), 53))
+        (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
+    except timeout:
+        # Try a different one here
+        print "This guy is empty!"
+        return "empty"
+
+    queryHeader = Header.fromData(nsreply)
+    queryQE = QE.fromData(nsreply, queryHeader.__len__())
+
+    originalQ = str(queryQE).split("IN")[0].strip()
+    print "question was: ", originalQ
+
+    offset = queryHeader.__len__() + queryQE.__len__()
+
+    minRRLineLen = len(nsreply) - offset - 1
+    rrCounter = 0
+    nsTuples = []
+    queryRRTuples = []
+    addressCounter = 0
+    cNameCounter = 0
+    soaCounter = 0
+
+    # Parsing all returned RRs
+    while minRRLineLen < len(nsreply) - offset:
+        # Get next glue line
+        auxRRline = RR.fromData(nsreply, offset)
+
+        # Append to RR list, update offset
+        queryRRTuples.append(auxRRline)
+        offset += queryRRTuples[rrCounter][1]
+
+        queryRR = queryRRTuples[rrCounter][0]
+        if queryRR.__class__ == RR_NS:
+            # Not useful now
+            print "This is a NS"
+            parts = queryRR.__str__().split("NS")
+            authorityAddr = parts[len(parts) - 1].strip()
+            domain = parts[0].split("  ")[0].strip()
+            nsTuples.append((domain, authorityAddr))
+            print domain, authorityAddr
+        elif queryRR.__class__ == RR_A:
+            print "This is an RR_A"
+            addressCounter = 1
+            parts = queryRR.__str__().split("A")
+            authorityAdditional = parts[0].split("  ")[0].strip()
+            ip = parts[len(parts) - 1].strip()
+            print authorityAdditional, ip, originalQ
+
+            # Found required answer
+            if authorityAdditional == originalQ: return nsreply
+            else:
+                reply = recurser(question, ip)
+                if reply != "empty": return reply
+        elif queryRR.__class__ == RR_CNAME:
+            cname = str(queryRR).split("CNAME")[1].strip()
+            reply = recurser(cname, ipQuerried)
+            cNameCounter = 1
+            if reply != "empty": return reply
+            else: return "empty"
+        elif queryRR.__class__ == RR_SOA:
+            soa = str(queryRR).split("SOA")[1].strip().split(" ")[0]
+            soaCounter = 1
+            
+
+
+        # Print everything else that might be relevant
+        elif queryRR.__class__ != RR_AAAA:
+            print queryRR, queryRR.__class__
+
+        # Update minimum line length for safety stop
+        if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
+        rrCounter += 1
+
+    if addressCounter == 0 & cNameCounter == 0 & soaCounter == 0:
+        for tuple in nsTuples:
+            reply = recurser(question, tuple[1])
+            if reply != "empty": return reply
+
+
 # >>> entry point of ncsdns.py <<<
 
 # Seed random number generator with current time of day:
@@ -146,47 +230,17 @@ while 1:
         log.error("client provided no data")
         continue
     else:
-        cs.sendto(data, (ROOTNS_IN_ADDR, 53))
-        (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
-
-        print("SENT!")
-        print "NSReply length is: " + str(len(nsreply))
-
-        queryHeader = Header.fromData(nsreply)
-        queryQE = QE.fromData(nsreply, queryHeader.__len__())
-
-        print "Query header received from client is:\n", queryHeader
-        print "Query QE received from client is:\n", queryQE
-        print "Query RR received from client is:\n"
-
-        queryRRTuples = []
-        offset = queryHeader.__len__() + queryQE.__len__()
-
-        minRRLineLen = len(nsreply) - offset - 1
-        RRcounter = 0
-        
-        while minRRLineLen < len(nsreply) - offset:
-            # Get next glue line
-            auxRRline = RR.fromData(nsreply, offset)
-
-            # Append to RR list, update offset
-            queryRRTuples.append(auxRRline)
-            offset += queryRRTuples[RRcounter][1]
-
-            # Debug printing
-            queryRR = queryRRTuples[RRcounter][0]
-            print queryRR
-
-            # Update minimum line length for safety stop
-            if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
-            RRcounter += 1
-
-        print "Done - next querry;"
-
+        question = data
+        ip = ROOTNS_IN_ADDR
         # Final response back to client
-        reply = nsreply
+        reply = recurser(question, ip)
+        print "Found it!!!!! - ", reply
+
         address = (str(client_address[0]), 33333)
+        print "Client is", client_address
         logger.log(DEBUG2, "our reply in full:")
         logger.log(DEBUG2, hexdump(reply))
 
-    ss.sendto(reply, address)
+        ss.sendto(reply, client_address)
+
+
