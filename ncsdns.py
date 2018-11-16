@@ -16,7 +16,6 @@ from libs.dnslib.QE import QE
 from libs.inetlib.types import *
 from libs.util import *
 
-
 # timeout in seconds to wait for reply
 TIMEOUT = 5
 
@@ -24,82 +23,90 @@ TIMEOUT = 5
 ROOTNS_DN = "f.root-servers.net."
 ROOTNS_IN_ADDR = "192.5.5.241"
 
+# globals
+answers = []
+authorities = []
+additionals = []
+
 
 # cache objects (not mandatory to use)
 class RR_A_Cache:
     def __init__(self):
-        self.cache = dict()     # domain_name -> [(ip_address, expiration_time, authoritative)]
+        self.cache = dict()  # domain_name -> [(ip_address, expiration_time, authoritative)]
 
-    def put(self,domain_name,ip_addr,expiration,authoritative=False):
+    def put(self, domain_name, ip_addr, expiration, authoritative=False):
         if domain_name not in self.cache:
             self.cache[domain_name] = dict()
-        self.cache[domain_name][ip_addr] = (expiration,authoritative)
+        self.cache[domain_name][ip_addr] = (expiration, authoritative)
 
-    def contains(self,domain_name):
+    def contains(self, domain_name):
         return domain_name in self.cache
-    
-    def getIpAddresses(self,domain_name):
+
+    def getIpAddresses(self, domain_name):
         return self.cache[domain_name].keys()
 
-    def getExpiration(self,domain_name,ip_address):
+    def getExpiration(self, domain_name, ip_address):
         return self.cache[domain_name][ip_address][0]
-    
-    def getAuthoritative(self,domain_name,ip_address):
+
+    def getAuthoritative(self, domain_name, ip_address):
         return self.cache[domain_name][ip_address][1]
 
     def __str__(self):
         return str(self.cache)
 
+
 class CN_Cache:
     def __init__(self):
-        self.cache = dict()     # domain_name -> (cname, expiration_time)
+        self.cache = dict()  # domain_name -> (cname, expiration_time)
 
-    def put(self,domain_name,canonical_name,expiration):
-        self.cache[domain_name] = (canonical_name,expiration)
+    def put(self, domain_name, canonical_name, expiration):
+        self.cache[domain_name] = (canonical_name, expiration)
 
-    def contains(self,domain_name):
+    def contains(self, domain_name):
         return domain_name in self.cache
 
     def getCanonicalName(self, domain_name):
         return self.cache[domain_name][0]
 
-    def getCanonicalNameExpiration(self,domain_name):
+    def getCanonicalNameExpiration(self, domain_name):
         return self.cache[domain_name][1]
 
     def __str__(self):
         return str(self.cache)
 
+
 class RR_NS_Cache:
     def __init__(self):
-        self.cache = dict()     # domain_name -> (NS_record,expiration_time, authoritative)
-        
-    def put(self,zone_domain_name,name_server_domain_name,expiration,authoritative):
+        self.cache = dict()  # domain_name -> (NS_record,expiration_time, authoritative)
+
+    def put(self, zone_domain_name, name_server_domain_name, expiration, authoritative):
         if zone_domain_name not in self.cache:
             self.cache[zone_domain_name] = OrderedDict()
-        self.cache[zone_domain_name][name_server_domain_name] = (expiration,authoritative)
+        self.cache[zone_domain_name][name_server_domain_name] = (expiration, authoritative)
 
-    def get(self,zone_domain_name):
+    def get(self, zone_domain_name):
         list_name_servers = []
         for name_server in self.cache[zone_domain_name]:
-            list_name_servers += [(name_server,self.cache[zone_domain_name][name_server][0],self.cache[zone_domain_name][name_server][1])]
+            list_name_servers += [(name_server, self.cache[zone_domain_name][name_server][0],
+                                   self.cache[zone_domain_name][name_server][1])]
         return list_name_servers
 
-    def contains(self,zone_domain_name):
+    def contains(self, zone_domain_name):
         return zone_domain_name in self.cache
 
     def __str__(self):
         return str(self.cache)
 
 
+def recurser(question, ipQuerried):
 
-def recurser(question, ipQuerried) :
     print "\n"
     print "The IP that i've called was:", str(ipQuerried), "- I am looking for:", question
+
     try:
-        cs.sendto(str(question), (str(ipQuerried), 53))
+        cs.sendto(question, (ipQuerried, 53))
         (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
     except timeout:
-        print "This guy is empty!"
         return "empty"
 
     queryHeader = Header.fromData(nsreply)
@@ -112,11 +119,9 @@ def recurser(question, ipQuerried) :
 
     minRRLineLen = len(nsreply) - offset - 1
     rrCounter = 0
-    nsTuples = []
+    nsAuthorities = []
     queryRRTuples = []
     addressCounter = 0
-    cNameCounter = 0
-    soaCounter = 0
 
     # Parsing all returned RRs
     while minRRLineLen < len(nsreply) - offset:
@@ -128,13 +133,9 @@ def recurser(question, ipQuerried) :
         offset += queryRRTuples[rrCounter][1]
 
         queryRR = queryRRTuples[rrCounter][0]
+
         if queryRR.__class__ == RR_NS:
-            #print "This is a NS"
-            parts = queryRR.__str__().split("NS")
-            authorityAddr = parts[len(parts) - 1].strip()
-            domain = parts[0].split("  ")[0].strip()
-            nsTuples.append((domain, authorityAddr))
-            #print domain, authorityAddr
+            nsAuthorities.append(queryRR)
 
         elif queryRR.__class__ == RR_A:
             print "This is an RR_A"
@@ -145,23 +146,28 @@ def recurser(question, ipQuerried) :
             print authorityAdditional, ip, originalQ
 
             # Found required answer
-            if authorityAdditional == originalQ: return nsreply
+            if authorityAdditional == originalQ:
+                answers.append(queryRR)
+                return nsreply
             else:
                 reply = recurser(question, ip)
                 if reply != "empty": return reply
 
         elif queryRR.__class__ == RR_CNAME:
+            answers.append(queryRR)
             print queryRR._cname
 
-            newHeader = Header(randint(1, 65000),  Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
-            newQE = QE( dn=queryRR._cname)
+            newHeader = Header(randint(1, 65000), Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
+            newQE = QE(dn=queryRR._cname)
             newQuery = newHeader.pack() + newQE.pack()
 
             reply = recurser(newQuery, ROOTNS_IN_ADDR)
 
-            cNameCounter = 1
-            if reply != "empty": return reply
-            else: return "empty"
+            addressCounter = 1
+            if reply != "empty":
+                return reply
+            else:
+                return "empty", []
         elif queryRR.__class__ == RR_SOA:
             return "empty"
 
@@ -169,15 +175,18 @@ def recurser(question, ipQuerried) :
         if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
         rrCounter += 1
 
-    if addressCounter == 0 & cNameCounter == 0 & soaCounter == 0:
-        for tuple in nsTuples:
-            newHeader = Header(randint(1, 65000),  Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
-            newQE = QE( dn=tuple[1])
-            newQuery = newHeader.pack() + newQE.pack()
+    if addressCounter == 0 :
+        for auth in nsAuthorities:
+            newNsHeader = Header(randint(1, 65000), Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
+            newNsQE = QE(dn=auth._nsdn)
 
-            reply = recurser(newQuery, ROOTNS_IN_ADDR)
-            if reply != "empty": return reply
-            else: return "empty"
+            newNsQuery = newNsHeader.pack() + newNsQE.pack()
+
+            reply = recurser(newNsQuery, ROOTNS_IN_ADDR)
+            if reply != "empty":
+                return reply
+            else:
+                return "empty"
 
 
 # >>> entry point of ncsdns.py <<<
@@ -191,18 +200,20 @@ pp = pprint.PrettyPrinter(indent=3)
 
 # Initialize the cache data structures
 acache = RR_A_Cache()
-acache.put(DomainName(ROOTNS_DN),InetAddr(ROOTNS_IN_ADDR),expiration=MAXINT,authoritative=True)
+acache.put(DomainName(ROOTNS_DN), InetAddr(ROOTNS_IN_ADDR), expiration=MAXINT, authoritative=True)
 
 nscache = RR_NS_Cache()
-nscache.put(DomainName("."),DomainName(ROOTNS_DN),expiration=MAXINT,authoritative=True)
+nscache.put(DomainName("."), DomainName(ROOTNS_DN), expiration=MAXINT, authoritative=True)
 
 cnamecache = CN_Cache()
+
 
 # Parse the command line and assign us an ephemeral port to listen on:
 def check_port(option, opt_str, value, parser):
     if value < 32768 or value > 61000:
         raise OptionValueError("need 32768 <= port <= 61000")
     parser.values.port = value
+
 
 parser = OptionParser()
 parser.add_option("-p", "--port", dest="port", type="int", action="callback",
@@ -231,6 +242,7 @@ cs = socket(AF_INET, SOCK_DGRAM)
 # connections with each iteration of the following loop:
 while 1:
     (data, client_address,) = ss.recvfrom(512)  # DNS limits UDP msgs to 512 bytes
+    answers = []
     if not data:
         log.error("client provided no data")
         continue
@@ -238,20 +250,26 @@ while 1:
         question = data
         ip = ROOTNS_IN_ADDR
         initialHeader = Header.fromData(data)
+        initialQE = QE.fromData(data, initialHeader.__len__())
         initialId = initialHeader._id
         # Final response back to client
-        reply = recurser(question, ip)
+        nsreply = recurser(question, ip)
 
-        #Recreate the response using the initialID
-        
+        # Recreate the response using the initialID
+        receivedHeader = Header.fromData(nsreply)
+        queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=0, arcount=0, qr=True, aa=True, rd=False, ra=True)
+        offset = queryHeader.__len__() + initialQE.__len__()
 
-        print "Found it!!!!! - ", reply
+        response = queryHeader.pack() + initialQE.pack()
+
+        for ans in answers:
+            response += ans.pack()
+
+        print "Finished!", response.__str__()
 
         address = (str(client_address[0]), 33333)
-        print "Client is", client_address
+
         logger.log(DEBUG2, "our reply in full:")
-        logger.log(DEBUG2, hexdump(reply))
+        logger.log(DEBUG2, hexdump(response))
 
-        ss.sendto(reply, client_address)
-
-
+        ss.sendto(response, client_address)
