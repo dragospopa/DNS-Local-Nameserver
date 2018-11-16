@@ -25,7 +25,7 @@ ROOTNS_IN_ADDR = "192.5.5.241"
 
 # globals
 answers = []
-authorities = []
+auths = []
 additionals = []
 
 
@@ -97,11 +97,39 @@ class RR_NS_Cache:
     def __str__(self):
         return str(self.cache)
 
+def get_nameservers(nsreply):
+    queryHeader = Header.fromData(nsreply)
+    queryQE = QE.fromData(nsreply, queryHeader.__len__())
+
+    offset = queryHeader.__len__() + queryQE.__len__()
+
+    minRRLineLen = len(nsreply) - offset - 1
+    rrCounter = 0
+    nsAuthorities = []
+    queryRRTuples = []
+
+    # Parsing all returned RRs
+    while minRRLineLen < len(nsreply) - offset:
+        # Get next glue line
+        auxRRline = RR.fromData(nsreply, offset)
+        # Append to RR list, update offset
+        queryRRTuples.append(auxRRline)
+        offset += queryRRTuples[rrCounter][1]
+        queryRR = queryRRTuples[rrCounter][0]
+        if queryRR.__class__ == RR_NS:
+            nsAuthorities.append(queryRR)
+
+        # Update minimum line length for safety stop
+        if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
+        rrCounter += 1
+
+    return nsAuthorities
+
 
 def recurser(question, ipQuerried):
 
     print "\n"
-    print "The IP that i've called was:", str(ipQuerried), "- I am looking for:", question
+    print "The IP that i've called was:", str(ipQuerried)
 
     try:
         cs.sendto(question, (ipQuerried, 53))
@@ -138,17 +166,21 @@ def recurser(question, ipQuerried):
             nsAuthorities.append(queryRR)
 
         elif queryRR.__class__ == RR_A:
-            print "This is an RR_A"
             addressCounter = 1
             parts = queryRR.__str__().split("A")
             ip = parts[len(parts) - 1].strip()
-            print  ip, originalQ
 
             # Found required answer
             if queryRR._dn == originalQ:
                 answers.append(queryRR)
+                print "These are the found NSs:"
+                for ns in nsAuthorities:
+                    print ns.__str__()
+                print "---\n"
+                auths.extend(get_nameservers(nsreply))
                 return nsreply
             else:
+                authorities = []
                 reply = recurser(question, ip)
                 if reply != "empty": return reply
 
@@ -181,7 +213,7 @@ def recurser(question, ipQuerried):
 
             newNsQuery = newNsHeader.pack() + newNsQE.pack()
 
-            reply = recurser(newNsQuery, ROOTNS_IN_ADDR)
+            reply = recurser(question, str(auth._nsdn))
             if reply != "empty":
                 return reply
             else:
@@ -242,6 +274,8 @@ cs = socket(AF_INET, SOCK_DGRAM)
 while 1:
     (data, client_address,) = ss.recvfrom(512)  # DNS limits UDP msgs to 512 bytes
     answers = []
+    auths = []
+    additionals = []
     if not data:
         log.error("client provided no data")
         continue
@@ -256,13 +290,15 @@ while 1:
 
         # Recreate the response using the initialID
         receivedHeader = Header.fromData(nsreply)
-        queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=0, arcount=0, qr=True, aa=True, rd=False, ra=True)
+        queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=len(auths), arcount=0, qr=True, aa=True, rd=False, ra=True)
         offset = queryHeader.__len__() + initialQE.__len__()
 
         response = queryHeader.pack() + initialQE.pack()
 
         for ans in answers:
             response += ans.pack()
+        for auth in auths:
+            response += auth.pack()
 
         print "Finished!", response.__str__()
 
