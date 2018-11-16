@@ -141,12 +141,11 @@ def recurser(question, ipQuerried):
             print "This is an RR_A"
             addressCounter = 1
             parts = queryRR.__str__().split("A")
-            authorityAdditional = parts[0].split("  ")[0].strip()
             ip = parts[len(parts) - 1].strip()
-            print authorityAdditional, ip, originalQ
+            print  ip, originalQ
 
             # Found required answer
-            if authorityAdditional == originalQ:
+            if queryRR._dn == originalQ:
                 answers.append(queryRR)
                 return nsreply
             else:
