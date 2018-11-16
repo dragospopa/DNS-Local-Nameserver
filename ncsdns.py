@@ -93,12 +93,12 @@ class RR_NS_Cache:
 
 
 def recurser(question, ipQuerried) :
-    print "The IP that i've called was:", str(ipQuerried)
+    print "\n"
+    print "The IP that i've called was:", str(ipQuerried), "- I am looking for:", question
     try:
         cs.sendto(str(question), (str(ipQuerried), 53))
         (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
     except timeout:
-        # Try a different one here
         print "This guy is empty!"
         return "empty"
 
@@ -129,13 +129,13 @@ def recurser(question, ipQuerried) :
 
         queryRR = queryRRTuples[rrCounter][0]
         if queryRR.__class__ == RR_NS:
-            # Not useful now
-            print "This is a NS"
+            #print "This is a NS"
             parts = queryRR.__str__().split("NS")
             authorityAddr = parts[len(parts) - 1].strip()
             domain = parts[0].split("  ")[0].strip()
             nsTuples.append((domain, authorityAddr))
-            print domain, authorityAddr
+            #print domain, authorityAddr
+
         elif queryRR.__class__ == RR_A:
             print "This is an RR_A"
             addressCounter = 1
@@ -149,21 +149,21 @@ def recurser(question, ipQuerried) :
             else:
                 reply = recurser(question, ip)
                 if reply != "empty": return reply
+
         elif queryRR.__class__ == RR_CNAME:
-            cname = str(queryRR).split("CNAME")[1].strip()
-            reply = recurser(cname, ipQuerried)
+            print queryRR._cname
+
+            newHeader = Header(randint(1, 65000),  Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
+            newQE = QE( dn=queryRR._cname)
+            newQuery = newHeader.pack() + newQE.pack()
+
+            reply = recurser(newQuery, ROOTNS_IN_ADDR)
+
             cNameCounter = 1
             if reply != "empty": return reply
             else: return "empty"
         elif queryRR.__class__ == RR_SOA:
-            soa = str(queryRR).split("SOA")[1].strip().split(" ")[0]
-            soaCounter = 1
-            
-
-
-        # Print everything else that might be relevant
-        elif queryRR.__class__ != RR_AAAA:
-            print queryRR, queryRR.__class__
+            return "empty"
 
         # Update minimum line length for safety stop
         if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
@@ -171,8 +171,13 @@ def recurser(question, ipQuerried) :
 
     if addressCounter == 0 & cNameCounter == 0 & soaCounter == 0:
         for tuple in nsTuples:
-            reply = recurser(question, tuple[1])
+            newHeader = Header(randint(1, 65000),  Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
+            newQE = QE( dn=tuple[1])
+            newQuery = newHeader.pack() + newQE.pack()
+
+            reply = recurser(newQuery, ROOTNS_IN_ADDR)
             if reply != "empty": return reply
+            else: return "empty"
 
 
 # >>> entry point of ncsdns.py <<<
@@ -232,8 +237,14 @@ while 1:
     else:
         question = data
         ip = ROOTNS_IN_ADDR
+        initialHeader = Header.fromData(data)
+        initialId = initialHeader._id
         # Final response back to client
         reply = recurser(question, ip)
+
+        #Recreate the response using the initialID
+        
+
         print "Found it!!!!! - ", reply
 
         address = (str(client_address[0]), 33333)
