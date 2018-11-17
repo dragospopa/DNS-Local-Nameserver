@@ -124,6 +124,19 @@ def recurser(question, ipQuerried):
              print newQE.pack()
              return newHeader.pack() + newQE.pack()
 
+    elif cnamecache.contains(queryQE._dn):
+        cn = cnamecache.getCanonicalName(queryQE._dn)
+        ttl = cnamecache.getCanonicalNameExpiration(queryQE._dn) - int(time())
+        if ttl < 0:
+            cnamecache.cache.pop(queryQE._dn)
+        else:
+            newHeader = Header(queryHeader._id, 0, 0, 1)
+            newQE = QE(dn=cn)
+            reply = recurser(newHeader.pack() + newQE.pack(), ROOTNS_IN_ADDR)
+            if reply != "empty" and reply != None:
+                answers.append(RR_CNAME(queryQE._dn, ttl, cn))
+                return reply
+
     try:
         cs.sendto(question, (ipQuerried, 53))
         (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
@@ -178,8 +191,15 @@ def recurser(question, ipQuerried):
             else:
                 return "empty"
 
+    if len(nsAuthorities) > 0:
+        for ns in nsAuthorities:
+            if nscache.contains(ns._dn) == False:
+                nscache.put(ns._nsdn, ns._dn, ns._ttl + int(time()),authoritative=True)
+
     if len(cnames) > 0:
         for queryRR in cnames:
+            if cnamecache.contains(queryRR._dn) == False:
+                cnamecache.put(queryRR._dn, queryRR._cname, queryRR._ttl + int(time()))
             answers.append(queryRR)
             print queryRR._cname
 
@@ -197,8 +217,7 @@ def recurser(question, ipQuerried):
     if len(rra) > 0:
         for queryRR in rra:
             if acache.contains(queryRR._dn) == False:
-                timeNow = int(time())
-                acache.put(queryRR._dn, inet_ntoa(queryRR._addr), queryRR._ttl+timeNow, authoritative=True)
+                acache.put(queryRR._dn, inet_ntoa(queryRR._addr), queryRR._ttl+ int(time()), authoritative=True)
             parts = queryRR.__str__().split("A")
             ip = parts[len(parts) - 1].strip()
 
@@ -309,7 +328,9 @@ while 1:
 
         print "Finished!", response.__str__()
 
-        print "Caching incoming", acache.__str__()
+        print "RR_ A caching incoming", acache.__str__()
+        print "CNAMEs chache incoming", cnamecache.__str__()
+        print "NS Caching incoming", nscache.__str__()
 
         address = (str(client_address[0]), 33333)
 
