@@ -312,19 +312,25 @@ while 1:
         nsreply = recurser(question, ip)
 
         # Recreate the response using the initialID
-        receivedHeader = Header.fromData(nsreply)
-        queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=len(auths), arcount=len(additionals), qr=True, aa=True,
-                             rd=False, ra=True)
-        offset = queryHeader.__len__() + initialQE.__len__()
+        print "This is the reply", nsreply
+        if nsreply == None or nsreply == "empty":
+            newHeader = Header(initialId, 0,Header.RCODE_NAMEERR, 1)
+            response = newHeader.pack() + initialQE.pack()
+        else:
+            receivedHeader = Header.fromData(nsreply)
+            queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=len(auths), arcount=len(additionals), qr=True, aa=True,
+                                 rd=False, ra=True)
+            offset = queryHeader.__len__() + initialQE.__len__()
 
-        response = queryHeader.pack() + initialQE.pack()
+            response = queryHeader.pack() + initialQE.pack()
 
-        for ans in answers:
-            response += ans.pack()
-        for auth in auths:
-            response += auth.pack()
-        for adds in additionals:
-            response += adds.pack()
+            answers.reverse()
+            for ans in answers:
+                response += ans.pack()
+            for auth in auths:
+                response += auth.pack()
+            for adds in additionals:
+                response += adds.pack()
 
         print "Finished!", response.__str__()
 
