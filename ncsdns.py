@@ -97,37 +97,8 @@ class RR_NS_Cache:
     def __str__(self):
         return str(self.cache)
 
-def get_nameservers(nsreply):
-    queryHeader = Header.fromData(nsreply)
-    queryQE = QE.fromData(nsreply, queryHeader.__len__())
-
-    offset = queryHeader.__len__() + queryQE.__len__()
-
-    minRRLineLen = len(nsreply) - offset - 1
-    rrCounter = 0
-    nsAuthorities = []
-    queryRRTuples = []
-
-    # Parsing all returned RRs
-    while minRRLineLen < len(nsreply) - offset:
-        # Get next glue line
-        auxRRline = RR.fromData(nsreply, offset)
-        # Append to RR list, update offset
-        queryRRTuples.append(auxRRline)
-        offset += queryRRTuples[rrCounter][1]
-        queryRR = queryRRTuples[rrCounter][0]
-        if queryRR.__class__ == RR_NS:
-            nsAuthorities.append(queryRR)
-
-        # Update minimum line length for safety stop
-        if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
-        rrCounter += 1
-
-    return nsAuthorities
-
 
 def recurser(question, ipQuerried):
-
     print "\n"
     print "The IP that i've called was:", str(ipQuerried)
 
@@ -148,8 +119,9 @@ def recurser(question, ipQuerried):
     minRRLineLen = len(nsreply) - offset - 1
     rrCounter = 0
     nsAuthorities = []
+    rra = []
+    cnames = []
     queryRRTuples = []
-    addressCounter = 0
 
     # Parsing all returned RRs
     while minRRLineLen < len(nsreply) - offset:
@@ -161,30 +133,30 @@ def recurser(question, ipQuerried):
         offset += queryRRTuples[rrCounter][1]
 
         queryRR = queryRRTuples[rrCounter][0]
-
         if queryRR.__class__ == RR_NS:
             nsAuthorities.append(queryRR)
-
         elif queryRR.__class__ == RR_A:
-            addressCounter = 1
-            parts = queryRR.__str__().split("A")
-            ip = parts[len(parts) - 1].strip()
-
-            # Found required answer
-            if queryRR._dn == originalQ:
-                answers.append(queryRR)
-                print "These are the found NSs:"
-                for ns in nsAuthorities:
-                    print ns.__str__()
-                print "---\n"
-                auths.extend(get_nameservers(nsreply))
-                return nsreply
-            else:
-                authorities = []
-                reply = recurser(question, ip)
-                if reply != "empty": return reply
-
+            rra.append(queryRR)
         elif queryRR.__class__ == RR_CNAME:
+            cnames.append(queryRR)
+
+        # Update minimum line length for safety stop
+        if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
+        rrCounter += 1
+
+    if len(rra) == 0 & len(cnames) == 0:
+        for auth in nsAuthorities:
+            # newNsHeader = Header(randint(1, 65000), Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
+            # newNsQE = QE(dn=auth._nsdn)
+            # newNsQuery = newNsHeader.pack() + newNsQE.pack()
+            reply = recurser(question, str(auth._nsdn))
+            if reply != "empty":
+                return reply
+            else:
+                return "empty"
+
+    if len(cnames) > 0:
+        for queryRR in cnames:
             answers.append(queryRR)
             print queryRR._cname
 
@@ -193,31 +165,36 @@ def recurser(question, ipQuerried):
             newQuery = newHeader.pack() + newQE.pack()
 
             reply = recurser(newQuery, ROOTNS_IN_ADDR)
-
-            addressCounter = 1
-            if reply != "empty":
-                return reply
-            else:
-                return "empty", []
-        elif queryRR.__class__ == RR_SOA:
-            return "empty"
-
-        # Update minimum line length for safety stop
-        if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
-        rrCounter += 1
-
-    if addressCounter == 0 :
-        for auth in nsAuthorities:
-            newNsHeader = Header(randint(1, 65000), Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
-            newNsQE = QE(dn=auth._nsdn)
-
-            newNsQuery = newNsHeader.pack() + newNsQE.pack()
-
-            reply = recurser(question, str(auth._nsdn))
             if reply != "empty":
                 return reply
             else:
                 return "empty"
+
+    if len(rra) > 0:
+        for queryRR in rra:
+            parts = queryRR.__str__().split("A")
+            ip = parts[len(parts) - 1].strip()
+
+            # Found required answer
+            if queryRR._dn == originalQ:
+
+                # Add all answers
+                counter = 0
+                while counter < len(rra):
+                    if rra[counter]._dn == originalQ:
+                        answers.append(rra[counter])
+                        rra.pop(counter)
+                    counter += 1
+
+                # Add found authority records
+                auths.extend(nsAuthorities)
+                additionals.extend(rra)
+
+                return nsreply
+            else:
+                reply = recurser(question, ip)
+                if reply != "empty": return reply
+
 
 
 # >>> entry point of ncsdns.py <<<
@@ -290,7 +267,8 @@ while 1:
 
         # Recreate the response using the initialID
         receivedHeader = Header.fromData(nsreply)
-        queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=len(auths), arcount=0, qr=True, aa=True, rd=False, ra=True)
+        queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=len(auths), arcount=len(additionals), qr=True, aa=True,
+                             rd=False, ra=True)
         offset = queryHeader.__len__() + initialQE.__len__()
 
         response = queryHeader.pack() + initialQE.pack()
@@ -299,6 +277,8 @@ while 1:
             response += ans.pack()
         for auth in auths:
             response += auth.pack()
+        for adds in additionals:
+            response += adds.pack()
 
         print "Finished!", response.__str__()
 
