@@ -102,11 +102,34 @@ def recurser(question, ipQuerried):
     print "\n"
     print "The IP that i've called was:", str(ipQuerried)
 
+
+    queryHeader = Header.fromData(question)
+    queryQE = QE.fromData(question, queryHeader.__len__())
+    if acache.contains(queryQE._dn):
+        ips = acache.getIpAddresses(queryQE._dn)
+        flag = 0
+        for ip in ips:
+            ttl = acache.getExpiration(queryQE._dn, ip) - int(time())
+            if ttl < 0:
+                # too late for this record
+                acache.cache.pop(queryQE._dn)
+            else:
+                answers.append(RR_A(queryQE._dn, ttl, inet_aton(ip)))
+                flag = 1
+
+        if flag is 1:
+             newHeader = Header(queryHeader._id, 0, 0, 1, ancount=len(answers))
+             newQE = QE(dn=queryQE._dn)
+             print newHeader.pack()
+             print newQE.pack()
+             return newHeader.pack() + newQE.pack()
+
     try:
         cs.sendto(question, (ipQuerried, 53))
         (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
     except timeout:
         return "empty"
+    if len(nsreply) < 33: return "empty" # handle case where there is an empty response
 
     queryHeader = Header.fromData(nsreply)
     queryQE = QE.fromData(nsreply, queryHeader.__len__())
@@ -144,13 +167,13 @@ def recurser(question, ipQuerried):
         if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
         rrCounter += 1
 
-    if len(rra) == 0 & len(cnames) == 0:
+    if len(rra) == 0 and len(cnames) == 0:
         for auth in nsAuthorities:
             # newNsHeader = Header(randint(1, 65000), Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
             # newNsQE = QE(dn=auth._nsdn)
             # newNsQuery = newNsHeader.pack() + newNsQE.pack()
             reply = recurser(question, str(auth._nsdn))
-            if reply != "empty":
+            if reply != "empty" and reply != None:
                 return reply
             else:
                 return "empty"
@@ -165,13 +188,17 @@ def recurser(question, ipQuerried):
             newQuery = newHeader.pack() + newQE.pack()
 
             reply = recurser(newQuery, ROOTNS_IN_ADDR)
-            if reply != "empty":
+            if reply != "empty" and reply != None:
                 return reply
             else:
                 return "empty"
 
+
     if len(rra) > 0:
         for queryRR in rra:
+            if acache.contains(queryRR._dn) == False:
+                timeNow = int(time())
+                acache.put(queryRR._dn, inet_ntoa(queryRR._addr), queryRR._ttl+timeNow, authoritative=True)
             parts = queryRR.__str__().split("A")
             ip = parts[len(parts) - 1].strip()
 
@@ -193,7 +220,7 @@ def recurser(question, ipQuerried):
                 return nsreply
             else:
                 reply = recurser(question, ip)
-                if reply != "empty": return reply
+                if reply != "empty" and reply != None: return reply
 
 
 
@@ -281,6 +308,8 @@ while 1:
             response += adds.pack()
 
         print "Finished!", response.__str__()
+
+        print "Caching incoming", acache.__str__()
 
         address = (str(client_address[0]), 33333)
 
