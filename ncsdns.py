@@ -193,8 +193,7 @@ def recurser(question, ipQuerried):
 
     if len(nsAuthorities) > 0:
         for ns in nsAuthorities:
-            if nscache.contains(ns._dn) == False:
-                nscache.put(ns._nsdn, ns._dn, ns._ttl + int(time()),authoritative=True)
+            nscache.put(ns._dn, ns._nsdn, ns._ttl + int(time()),authoritative=True)
 
     if len(cnames) > 0:
         for queryRR in cnames:
@@ -233,7 +232,7 @@ def recurser(question, ipQuerried):
                     counter += 1
 
                 # Add found authority records
-                auths.extend(nsAuthorities)
+                #auths.extend(nsAuthorities)
                 additionals.extend(rra)
 
                 return nsreply
@@ -317,20 +316,44 @@ while 1:
             newHeader = Header(initialId, 0,Header.RCODE_NAMEERR, 1)
             response = newHeader.pack() + initialQE.pack()
         else:
+
+            finalAns = []
+            finalAns.extend(answers)
+            responseRRA = ""
+            for ans in finalAns:
+                responseRRA += ans.pack()
+                parent = ans._dn.parent()
+                print "------------- Looking for this parent:", str(parent)
+                if nscache.contains(parent):
+                    cached_zone_ns = nscache.get(str(parent))
+                    print cached_zone_ns
+                    for tuple in cached_zone_ns:
+                        cachedNS = RR_NS(parent, tuple[1] - int(time()), tuple[0])
+                        print str(cachedNS)
+                        auths.append(cachedNS)
+                '''
+                answers = []
+                foundParent = 0
+                parentQuerry = initialHeader.pack() + QE(dn=parent).pack()
+                reply = recurser(parentQuerry,ROOTNS_IN_ADDR)
+                for parentAns in answers:
+                    if parentAns.__class__ == RR_A:
+                        additionals.append(parentAns)
+                        foundParent = 1
+                if foundParent == 1: auths.append(parent)
+                '''
+            for auth in auths:
+                responseRRA += auth.pack()
+            for adds in additionals:
+                responseRRA += adds.pack()
+
+
             receivedHeader = Header.fromData(nsreply)
             queryHeader = Header(initialId, 0, 0, 1, ancount=len(answers), nscount=len(auths), arcount=len(additionals), qr=True, aa=True,
                                  rd=False, ra=True)
             offset = queryHeader.__len__() + initialQE.__len__()
 
-            response = queryHeader.pack() + initialQE.pack()
-
-            answers.reverse()
-            for ans in answers:
-                response += ans.pack()
-            for auth in auths:
-                response += auth.pack()
-            for adds in additionals:
-                response += adds.pack()
+            response = queryHeader.pack() + initialQE.pack() + responseRRA
 
         print "Finished!", response.__str__()
 
