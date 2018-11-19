@@ -103,7 +103,7 @@ def recurser(question, ipQuerried):
     queryQE = QE.fromData(question, queryHeader.__len__())
     if acache.contains(queryQE._dn):
         ips = acache.getIpAddresses(queryQE._dn)
-        flag = 0
+        foundRRA = 0
         for ip in ips:
             ttl = acache.getExpiration(queryQE._dn, ip) - int(time())
             if ttl < 0:
@@ -111,9 +111,9 @@ def recurser(question, ipQuerried):
                 acache.cache.pop(queryQE._dn)
             else:
                 answers.append(RR_A(queryQE._dn, ttl, inet_aton(ip)))
-                flag = 1
+                foundRRA = 1
 
-        if flag is 1:
+        if foundRRA is 1:
              newHeader = Header(queryHeader._id, 0, 0, 1, ancount=len(answers))
              newQE = QE(dn=queryQE._dn)
              return newHeader.pack() + newQE.pack()
@@ -127,7 +127,7 @@ def recurser(question, ipQuerried):
             newHeader = Header(queryHeader._id, 0, 0, 1)
             newQE = QE(dn=cn)
             reply = recurser(newHeader.pack() + newQE.pack(), ROOTNS_IN_ADDR)
-            if reply != "empty" and reply != None:
+            if reply != None:
                 answers.append(RR_CNAME(queryQE._dn, ttl, cn))
                 return reply
 
@@ -135,16 +135,17 @@ def recurser(question, ipQuerried):
         cs.sendto(question, (ipQuerried, 53))
         (nsreply, server_address,) = cs.recvfrom(2048)  # some queries require more space
     except timeout:
-        return "empty"
-    if len(nsreply) < 43: return "empty" # handle case where there is an empty response
+        return None
+    if len(nsreply) < 43: return None # handle case where there is an empty response
 
+    # Store these for later use when we want to solve CNAMEs or NSs
     queryHeader = Header.fromData(nsreply)
     queryQE = QE.fromData(nsreply, queryHeader.__len__())
-
     originalQ = str(queryQE).split("IN")[0].strip()
 
     offset = queryHeader.__len__() + queryQE.__len__()
 
+    # We'll need these for parsing, trust me
     minRRLineLen = len(nsreply) - offset - 1
     rrCounter = 0
     nsAuthorities = []
@@ -173,18 +174,20 @@ def recurser(question, ipQuerried):
         if minRRLineLen > auxRRline[1]: minRRLineLen = auxRRline[1]
         rrCounter += 1
 
+    # Start the handling of RRs
+
+    # Case where we only got NS back
     if len(rra) == 0 and len(cnames) == 0:
         for auth in nsAuthorities:
             reply = recurser(question, str(auth._nsdn))
-            if reply != "empty" and reply != None:
-                return reply
-            else:
-                return "empty"
+            return reply
 
+    # Cache NS for later
     if len(nsAuthorities) > 0:
         for ns in nsAuthorities:
             nscache.put(ns._dn, ns._nsdn, ns._ttl + int(time()),authoritative=True)
 
+    # Cache CNAMEs for later and querry them
     if len(cnames) > 0:
         for queryRR in cnames:
             if cnamecache.contains(queryRR._dn) == False:
@@ -196,12 +199,9 @@ def recurser(question, ipQuerried):
             newQuery = newHeader.pack() + newQE.pack()
 
             reply = recurser(newQuery, ROOTNS_IN_ADDR)
-            if reply != "empty" and reply != None:
-                return reply
-            else:
-                return "empty"
+            return reply
 
-
+    # Cache all RR_As for later, look if we got the one we are looking for
     if len(rra) > 0:
         for queryRR in rra:
             if acache.contains(queryRR._dn) == False:
@@ -219,16 +219,10 @@ def recurser(question, ipQuerried):
                         answers.append(rra[counter])
                         rra.pop(counter)
                     counter += 1
-
-                # Add found authority records
-                #auths.extend(nsAuthorities)
-                #additionals.extend(rra)
-
                 return nsreply
             else:
                 reply = recurser(question, ip)
-                if reply != "empty" and reply != None: return reply
-
+                return reply
 
 
 # >>> entry point of ncsdns.py <<<
@@ -284,82 +278,97 @@ cs = socket(AF_INET, SOCK_DGRAM)
 # connections with each iteration of the following loop:
 while 1:
     (data, client_address,) = ss.recvfrom(512)  # DNS limits UDP msgs to 512 bytes
+
+    # Making sure those globals are ready to be used
     answers = []
     auths = []
     additionals = []
+
     if not data:
         log.error("client provided no data")
         continue
     else:
+
+        # Saving all this data for response reconstrucion later
         question = data
         ip = ROOTNS_IN_ADDR
         initialHeader = Header.fromData(data)
         initialQE = QE.fromData(data, initialHeader.__len__())
         initialId = initialHeader._id
-        # Final response back to client
+
+        # The call to solve the main query
         nsreply = recurser(question, ip)
 
-        # Recreate the response using the initialID
-        if nsreply == None or nsreply == "empty":
+        if nsreply == None:
+            # Respond with name error
             newHeader = Header(initialId, 0,Header.RCODE_NAMEERR, 1)
             response = newHeader.pack() + initialQE.pack()
         else:
-
+            # Save these because we were using globals (never a good practice - too late now, sue me)
             finalAns = []
             finalAns.extend(answers)
+
             responseRRA = ""
             for ans in finalAns:
                 responseRRA += ans.pack()
                 foundParent = 0
                 parent = ans._dn
+
+                # Finding the NS most highly-qualified domain parent for returned DomainNames
+                # These are definitely found in cache as we already parsed them in the main query
                 while foundParent == 0:
                     parent = parent.parent()
                     if nscache.contains(parent):
                         foundParent = 1
                         cached_zone_ns = nscache.get(str(parent))
-                        #print cached_zone_ns
                         for tuple in cached_zone_ns:
                             cachedNS = RR_NS(parent, tuple[1] - int(time()), tuple[0])
-                            #print str(cachedNS)
                             auths.append(cachedNS)
 
+            # Save these because we were using globals (never a good practice - too late now, sue me)
             finalAuths = []
             finalAuths.extend(auths)
+
+            # Populating the Authority section
             for auth in auths:
                 responseRRA += auth.pack()
                 if acache.contains(auth._nsdn):
                     ips = acache.getIpAddresses(auth._nsdn)
-                    #print "These are the RRAs of AUTH:", acache.getIpAddresses(auth._nsdn)
                     for ip in ips:
                         ttl = acache.getExpiration(auth._nsdn, ip) - int(time())
                         if ttl < 0:
-                            # too late for this record
+                            # Too late for this record
                             acache.cache.pop(auth._nsdn)
+
+                            # Cache did not help, we have to query it the cool way
                             answers = []
                             newNsHeader = Header(randint(1, 65000), Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
                             newNsQE = QE(dn=auth._nsdn)
                             newNsQuery = newNsHeader.pack() + newNsQE.pack()
                             reply = recurser(newNsQuery, ROOTNS_IN_ADDR)
+
+                            # "answers" will now hold the glue records we were looking for
                             additionals.extend(answers)
                         else:
                             additionals.append(RR_A(auth._nsdn, ttl, inet_aton(ip)))
                 else:
+                    # Nothing in cache about the current NS, we have to query it the cool way
                     answers = []
                     newNsHeader = Header(randint(1, 65000), Header.OPCODE_QUERY, Header.RCODE_NOERR, qdcount=1)
                     newNsQE = QE(dn=auth._nsdn)
                     newNsQuery = newNsHeader.pack() + newNsQE.pack()
                     reply = recurser(newNsQuery, ROOTNS_IN_ADDR)
+
+                    # "answers" will now hold the glue records we were looking for
                     additionals.extend(answers)
 
             for adds in additionals:
                 responseRRA += adds.pack()
 
-
+            # Building final response using acquired information
             receivedHeader = Header.fromData(nsreply)
-            queryHeader = Header(initialId, 0, 0, 1, ancount=len(finalAns), nscount=len(finalAuths), arcount=len(additionals), qr=True, aa=True,
-                                 rd=False, ra=True)
-            offset = queryHeader.__len__() + initialQE.__len__()
-
+            queryHeader = Header(initialId, 0, 0, 1, ancount=len(finalAns), nscount=len(finalAuths),
+                                 arcount=len(additionals), qr=True, aa=True, rd=False, ra=True)
             response = queryHeader.pack() + initialQE.pack() + responseRRA
 
         address = (str(client_address[0]), 33333)
